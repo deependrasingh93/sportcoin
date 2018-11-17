@@ -1,445 +1,503 @@
-TEMPLATE = app
-TARGET = sportcoin-qt
-macx:TARGET = "Sportcoin-Qt"
-VERSION = 0.8.7.5
-INCLUDEPATH += src src/json src/qt
-QT += core gui network
-greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
-DEFINES += QT_GUI BOOST_THREAD_USE_LIB BOOST_SPIRIT_THREADSAFE
-CONFIG += no_include_pwd
-CONFIG += thread
+// Copyright (c) 2012 Pieter Wuille
+// Distributed under the MIT/X11 software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+#ifndef _BITCOIN_ADDRMAN
+#define _BITCOIN_ADDRMAN 1
 
-# for boost 1.37, add -mt to the boost libraries
-# use: qmake BOOST_LIB_SUFFIX=-mt
-# for boost thread win32 with _win32 sufix
-# use: BOOST_THREAD_LIB_SUFFIX=_win32-...
-# or when linking against a specific BerkelyDB version: BDB_LIB_SUFFIX=-4.8
+#include "netbase.h"
+#include "protocol.h"
+#include "util.h"
+#include "sync.h"
 
-# Dependency library locations can be customized with:
-#    BOOST_INCLUDE_PATH, BOOST_LIB_PATH, BDB_INCLUDE_PATH,
-#    BDB_LIB_PATH, OPENSSL_INCLUDE_PATH and OPENSSL_LIB_PATH respectively
 
-OBJECTS_DIR = build
-MOC_DIR = build
-UI_DIR = build
+#include <map>
+#include <vector>
 
-# use: qmake "RELEASE=1"
-contains(RELEASE, 1) {
-    # Mac: compile for maximum compatibility (10.5, 32-bit)
-    macx:QMAKE_CXXFLAGS += -mmacosx-version-min=10.5 -arch i386 -isysroot /Developer/SDKs/MacOSX10.5.sdk
-    macx:QMAKE_CFLAGS += -mmacosx-version-min=10.5 -arch i386 -isysroot /Developer/SDKs/MacOSX10.5.sdk
-    macx:QMAKE_OBJECTIVE_CFLAGS += -mmacosx-version-min=10.5 -arch i386 -isysroot /Developer/SDKs/MacOSX10.5.sdk
+#include <openssl/rand.h>
 
-    !win32:!macx {
-        # Linux: static link and extra security (see: https://wiki.debian.org/Hardening)
-        LIBS += -Wl,-Bstatic -Wl,-z,relro -Wl,-z,now
+
+/** Extended statistics about a CAddress */
+class CAddrInfo : public CAddress
+{
+private:
+    // where knowledge about this address first came from
+    CNetAddr source;
+
+    // last successful connection by us
+    int64 nLastSuccess;
+
+    // last try whatsoever by us:
+    // int64 CAddress::nLastTry
+
+    // connection attempts since last successful attempt
+    int nAttempts;
+
+    // reference count in new sets (memory only)
+    int nRefCount;
+
+    // in tried set? (memory only)
+    bool fInTried;
+
+    // position in vRandom
+    int nRandomPos;
+
+    friend class CAddrMan;
+
+public:
+
+    IMPLEMENT_SERIALIZE(
+        CAddress* pthis = (CAddress*)(this);
+        READWRITE(*pthis);
+        READWRITE(source);
+        READWRITE(nLastSuccess);
+        READWRITE(nAttempts);
+    )
+
+    void Init()
+    {
+        nLastSuccess = 0;
+        nLastTry = 0;
+        nAttempts = 0;
+        nRefCount = 0;
+        fInTried = false;
+        nRandomPos = -1;
     }
-}
 
-!win32 {
-    # for extra security against potential buffer overflows: enable GCCs Stack Smashing Protection
-    QMAKE_CXXFLAGS *= -fstack-protector-all
-    QMAKE_LFLAGS *= -fstack-protector-all
-    # Exclude on Windows cross compile with MinGW 4.2.x, as it will result in a non-working executable!
-    # This can be enabled for Windows, when we switch to MinGW >= 4.4.x.
-}
-# for extra security (see: https://wiki.debian.org/Hardening): this flag is GCC compiler-specific
-QMAKE_CXXFLAGS += -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2
-# for extra security on Windows: enable ASLR and DEP via GCC linker flags
-win32:QMAKE_LFLAGS *= -Wl,--dynamicbase -Wl,--nxcompat
-# on Windows: enable GCC large address aware linker flag
-win32:QMAKE_LFLAGS *= -Wl,--large-address-aware
-# i686-w64-mingw32
-win32:QMAKE_LFLAGS *= -static-libgcc -static-libstdc++
-
-# use: qmake "USE_QRCODE=1"
-# libqrencode (http://fukuchi.org/works/qrencode/index.en.html) must be installed for support
-contains(USE_QRCODE, 1) {
-    message(Building with QRCode support)
-    DEFINES += USE_QRCODE
-    LIBS += -lqrencode
-}
-
-# use: qmake "USE_UPNP=1" ( enabled by default; default)
-#  or: qmake "USE_UPNP=0" (disabled by default)
-#  or: qmake "USE_UPNP=-" (not supported)
-# miniupnpc (http://miniupnp.free.fr/files/) must be installed for support
-contains(USE_UPNP, -) {
-    message(Building without UPNP support)
-} else {
-    message(Building with UPNP support)
-    count(USE_UPNP, 0) {
-        USE_UPNP=1
+    CAddrInfo(const CAddress &addrIn, const CNetAddr &addrSource) : CAddress(addrIn), source(addrSource)
+    {
+        Init();
     }
-    DEFINES += USE_UPNP=$$USE_UPNP STATICLIB
-    INCLUDEPATH += $$MINIUPNPC_INCLUDE_PATH
-    LIBS += $$join(MINIUPNPC_LIB_PATH,,-L,) -lminiupnpc
-    win32:LIBS += -liphlpapi
-}
 
-# use: qmake "USE_DBUS=1"
-contains(USE_DBUS, 1) {
-    message(Building with DBUS (Freedesktop notifications) support)
-    DEFINES += USE_DBUS
-    QT += dbus
-}
-
-# use: qmake "USE_IPV6=1" ( enabled by default; default)
-#  or: qmake "USE_IPV6=0" (disabled by default)
-#  or: qmake "USE_IPV6=-" (not supported)
-contains(USE_IPV6, -) {
-    message(Building without IPv6 support)
-} else {
-    count(USE_IPV6, 0) {
-        USE_IPV6=1
+    CAddrInfo() : CAddress(), source()
+    {
+        Init();
     }
-    DEFINES += USE_IPV6=$$USE_IPV6
-}
 
-contains(BITCOIN_NEED_QT_PLUGINS, 1) {
-    DEFINES += BITCOIN_NEED_QT_PLUGINS
-    QTPLUGIN += qcncodecs qjpcodecs qtwcodecs qkrcodecs qtaccessiblewidgets
-}
+    // Calculate in which "tried" bucket this entry belongs
+    int GetTriedBucket(const std::vector<unsigned char> &nKey) const;
 
-INCLUDEPATH += src/leveldb/include src/leveldb/helpers
-LIBS += $$PWD/src/leveldb/libleveldb.a $$PWD/src/leveldb/libmemenv.a
-!win32 {
-    # we use QMAKE_CXXFLAGS_RELEASE even without RELEASE=1 because we use RELEASE to indicate linking preferences not -O preferences
-    genleveldb.commands = cd $$PWD/src/leveldb && CC=$$QMAKE_CC CXX=$$QMAKE_CXX $(MAKE) OPT=\"$$QMAKE_CXXFLAGS $$QMAKE_CXXFLAGS_RELEASE\" libleveldb.a libmemenv.a
-} else {
-    # make an educated guess about what the ranlib command is called
-    isEmpty(QMAKE_RANLIB) {
-        QMAKE_RANLIB = $$replace(QMAKE_STRIP, strip, ranlib)
+    // Calculate in which "new" bucket this entry belongs, given a certain source
+    int GetNewBucket(const std::vector<unsigned char> &nKey, const CNetAddr& src) const;
+
+    // Calculate in which "new" bucket this entry belongs, using its default source
+    int GetNewBucket(const std::vector<unsigned char> &nKey) const
+    {
+        return GetNewBucket(nKey, source);
     }
-    LIBS += -lshlwapi
-    genleveldb.commands = cd $$PWD/src/leveldb && CC=$$QMAKE_CC CXX=$$QMAKE_CXX TARGET_OS=OS_WINDOWS_CROSSCOMPILE $(MAKE) OPT=\"$$QMAKE_CXXFLAGS $$QMAKE_CXXFLAGS_RELEASE\" libleveldb.a libmemenv.a && $$QMAKE_RANLIB $$PWD/src/leveldb/libleveldb.a && $$QMAKE_RANLIB $$PWD/src/leveldb/libmemenv.a
-}
-genleveldb.target = $$PWD/src/leveldb/libleveldb.a
-genleveldb.depends = FORCE
-PRE_TARGETDEPS += $$PWD/src/leveldb/libleveldb.a
-QMAKE_EXTRA_TARGETS += genleveldb
-# Gross ugly hack that depends on qmake internals, unfortunately there is no other way to do it.
-QMAKE_CLEAN += $$PWD/src/leveldb/libleveldb.a; cd $$PWD/src/leveldb ; $(MAKE) clean
 
-# regenerate src/build.h
-!win32|contains(USE_BUILD_INFO, 1) {
-    genbuild.depends = FORCE
-    genbuild.commands = cd $$PWD; /bin/sh share/genbuild.sh $$OUT_PWD/build/build.h
-    genbuild.target = $$OUT_PWD/build/build.h
-    PRE_TARGETDEPS += $$OUT_PWD/build/build.h
-    QMAKE_EXTRA_TARGETS += genbuild
-    DEFINES += HAVE_BUILD_INFO
-}
+    // Determine whether the statistics about this entry are bad enough so that it can just be deleted
+    bool IsTerrible(int64 nNow = GetAdjustedTime()) const;
 
-QMAKE_CXXFLAGS_WARN_ON = -fdiagnostics-show-option -Wall -Wextra -Wformat -Wformat-security -Wno-unused-parameter -Wstack-protector
+    // Calculate the relative chance this entry should be given when selecting nodes to connect to
+    double GetChance(int64 nNow = GetAdjustedTime()) const;
 
-# Input
-DEPENDPATH += src src/json src/qt
-HEADERS += src/qt/bitcoingui.h \
-    src/qt/transactiontablemodel.h \
-    src/qt/addresstablemodel.h \
-    src/qt/optionsdialog.h \
-    src/qt/sendcoinsdialog.h \
-    src/qt/coincontroldialog.h \
-    src/qt/coincontroltreewidget.h \
-    src/qt/addressbookpage.h \
-    src/qt/signverifymessagedialog.h \
-    src/qt/aboutdialog.h \
-    src/qt/editaddressdialog.h \
-    src/qt/bitcoinaddressvalidator.h \
-    src/alert.h \
-    src/addrman.h \
-    src/base58.h \
-    src/bignum.h \
-    src/checkpoints.h \
-    src/coincontrol.h \
-    src/compat.h \
-    src/sync.h \
-    src/util.h \
-    src/hash.h \
-    src/uint256.h \
-    src/serialize.h \
-    src/main.h \
-    src/net.h \
-    src/key.h \
-    src/db.h \
-    src/walletdb.h \
-    src/script.h \
-    src/init.h \
-    src/bloom.h \
-    src/mruset.h \
-    src/checkqueue.h \
-    src/json/json_spirit_writer_template.h \
-    src/json/json_spirit_writer.h \
-    src/json/json_spirit_value.h \
-    src/json/json_spirit_utils.h \
-    src/json/json_spirit_stream_reader.h \
-    src/json/json_spirit_reader_template.h \
-    src/json/json_spirit_reader.h \
-    src/json/json_spirit_error_position.h \
-    src/json/json_spirit.h \
-    src/qt/clientmodel.h \
-    src/qt/guiutil.h \
-    src/qt/transactionrecord.h \
-    src/qt/guiconstants.h \
-    src/qt/optionsmodel.h \
-    src/qt/monitoreddatamapper.h \
-    src/qt/transactiondesc.h \
-    src/qt/transactiondescdialog.h \
-    src/qt/bitcoinamountfield.h \
-    src/wallet.h \
-    src/keystore.h \
-    src/qt/transactionfilterproxy.h \
-    src/qt/transactionview.h \
-    src/qt/walletmodel.h \
-    src/qt/walletview.h \
-    src/qt/walletstack.h \
-    src/qt/walletframe.h \
-    src/bitcoinrpc.h \
-    src/qt/overviewpage.h \
-    src/qt/csvmodelwriter.h \
-    src/crypter.h \
-    src/qt/sendcoinsentry.h \
-    src/qt/qvalidatedlineedit.h \
-    src/qt/bitcoinunits.h \
-    src/qt/qvaluecombobox.h \
-    src/qt/askpassphrasedialog.h \
-    src/protocol.h \
-    src/qt/notificator.h \
-    src/qt/paymentserver.h \
-    src/allocators.h \
-    src/ui_interface.h \
-    src/qt/rpcconsole.h \
-    src/scrypt.h \
-    src/version.h \
-    src/netbase.h \
-    src/clientversion.h \
-    src/txdb.h \
-    src/leveldb.h \
-    src/threadsafety.h \
-    src/limitedmap.h \
-    src/qt/macnotificationhandler.h \
-    src/qt/splashscreen.h
+};
 
-SOURCES += src/qt/bitcoin.cpp \
-    src/qt/bitcoingui.cpp \
-    src/qt/transactiontablemodel.cpp \
-    src/qt/addresstablemodel.cpp \
-    src/qt/optionsdialog.cpp \
-    src/qt/sendcoinsdialog.cpp \
-    src/qt/coincontroldialog.cpp \
-    src/qt/coincontroltreewidget.cpp \
-    src/qt/addressbookpage.cpp \
-    src/qt/signverifymessagedialog.cpp \
-    src/qt/aboutdialog.cpp \
-    src/qt/editaddressdialog.cpp \
-    src/qt/bitcoinaddressvalidator.cpp \
-    src/alert.cpp \
-    src/version.cpp \
-    src/sync.cpp \
-    src/util.cpp \
-    src/hash.cpp \
-    src/netbase.cpp \
-    src/key.cpp \
-    src/script.cpp \
-    src/main.cpp \
-    src/init.cpp \
-    src/net.cpp \
-    src/bloom.cpp \
-    src/checkpoints.cpp \
-    src/addrman.cpp \
-    src/db.cpp \
-    src/walletdb.cpp \
-    src/qt/clientmodel.cpp \
-    src/qt/guiutil.cpp \
-    src/qt/transactionrecord.cpp \
-    src/qt/optionsmodel.cpp \
-    src/qt/monitoreddatamapper.cpp \
-    src/qt/transactiondesc.cpp \
-    src/qt/transactiondescdialog.cpp \
-    src/qt/bitcoinstrings.cpp \
-    src/qt/bitcoinamountfield.cpp \
-    src/wallet.cpp \
-    src/keystore.cpp \
-    src/qt/transactionfilterproxy.cpp \
-    src/qt/transactionview.cpp \
-    src/qt/walletmodel.cpp \
-    src/qt/walletview.cpp \
-    src/qt/walletstack.cpp \
-    src/qt/walletframe.cpp \
-    src/bitcoinrpc.cpp \
-    src/rpcdump.cpp \
-    src/rpcnet.cpp \
-    src/rpcmining.cpp \
-    src/rpcwallet.cpp \
-    src/rpcblockchain.cpp \
-    src/rpcrawtransaction.cpp \
-    src/qt/overviewpage.cpp \
-    src/qt/csvmodelwriter.cpp \
-    src/crypter.cpp \
-    src/qt/sendcoinsentry.cpp \
-    src/qt/qvalidatedlineedit.cpp \
-    src/qt/bitcoinunits.cpp \
-    src/qt/qvaluecombobox.cpp \
-    src/qt/askpassphrasedialog.cpp \
-    src/protocol.cpp \
-    src/qt/notificator.cpp \
-    src/qt/paymentserver.cpp \
-    src/qt/rpcconsole.cpp \
-    src/scrypt.cpp \
-    src/noui.cpp \
-    src/leveldb.cpp \
-    src/txdb.cpp \
-    src/qt/splashscreen.cpp
+// Stochastic address manager
+//
+// Design goals:
+//  * Only keep a limited number of addresses around, so that addr.dat and memory requirements do not grow without bound.
+//  * Keep the address tables in-memory, and asynchronously dump the entire to able in addr.dat.
+//  * Make sure no (localized) attacker can fill the entire table with his nodes/addresses.
+//
+// To that end:
+//  * Addresses are organized into buckets.
+//    * Address that have not yet been tried go into 256 "new" buckets.
+//      * Based on the address range (/16 for IPv4) of source of the information, 32 buckets are selected at random
+//      * The actual bucket is chosen from one of these, based on the range the address itself is located.
+//      * One single address can occur in up to 4 different buckets, to increase selection chances for addresses that
+//        are seen frequently. The chance for increasing this multiplicity decreases exponentially.
+//      * When adding a new address to a full bucket, a randomly chosen entry (with a bias favoring less recently seen
+//        ones) is removed from it first.
+//    * Addresses of nodes that are known to be accessible go into 64 "tried" buckets.
+//      * Each address range selects at random 4 of these buckets.
+//      * The actual bucket is chosen from one of these, based on the full address.
+//      * When adding a new good address to a full bucket, a randomly chosen entry (with a bias favoring less recently
+//        tried ones) is evicted from it, back to the "new" buckets.
+//    * Bucket selection is based on cryptographic hashing, using a randomly-generated 256-bit key, which should not
+//      be observable by adversaries.
+//    * Several indexes are kept for high performance. Defining DEBUG_ADDRMAN will introduce frequent (and expensive)
+//      consistency checks for the entire data structure.
 
-RESOURCES += src/qt/bitcoin.qrc
+// total number of buckets for tried addresses
+#define ADDRMAN_TRIED_BUCKET_COUNT 64
 
-FORMS += src/qt/forms/sendcoinsdialog.ui \
-    src/qt/forms/coincontroldialog.ui \
-    src/qt/forms/addressbookpage.ui \
-    src/qt/forms/signverifymessagedialog.ui \
-    src/qt/forms/aboutdialog.ui \
-    src/qt/forms/editaddressdialog.ui \
-    src/qt/forms/transactiondescdialog.ui \
-    src/qt/forms/overviewpage.ui \
-    src/qt/forms/sendcoinsentry.ui \
-    src/qt/forms/askpassphrasedialog.ui \
-    src/qt/forms/rpcconsole.ui \
-    src/qt/forms/optionsdialog.ui
+// maximum allowed number of entries in buckets for tried addresses
+#define ADDRMAN_TRIED_BUCKET_SIZE 64
 
-contains(USE_QRCODE, 1) {
-HEADERS += src/qt/qrcodedialog.h
-SOURCES += src/qt/qrcodedialog.cpp
-FORMS += src/qt/forms/qrcodedialog.ui
-}
+// total number of buckets for new addresses
+#define ADDRMAN_NEW_BUCKET_COUNT 256
 
-contains(BITCOIN_QT_TEST, 1) {
-SOURCES += src/qt/test/test_main.cpp \
-    src/qt/test/uritests.cpp
-HEADERS += src/qt/test/uritests.h
-DEPENDPATH += src/qt/test
-QT += testlib
-TARGET = sportcoin-qt_test
-DEFINES += BITCOIN_QT_TEST
-  macx: CONFIG -= app_bundle
-}
+// maximum allowed number of entries in buckets for new addresses
+#define ADDRMAN_NEW_BUCKET_SIZE 64
 
-contains(USE_SSE2, 1) {
-DEFINES += USE_SSE2
-gccsse2.input  = SOURCES_SSE2
-gccsse2.output = $$PWD/build/${QMAKE_FILE_BASE}.o
-gccsse2.commands = $(CXX) -c $(CXXFLAGS) $(INCPATH) -o ${QMAKE_FILE_OUT} ${QMAKE_FILE_NAME} -msse2 -mstackrealign
-QMAKE_EXTRA_COMPILERS += gccsse2
-SOURCES_SSE2 += src/scrypt-sse2.cpp
-}
+// over how many buckets entries with tried addresses from a single group (/16 for IPv4) are spread
+#define ADDRMAN_TRIED_BUCKETS_PER_GROUP 4
 
-# Todo: Remove this line when switching to Qt5, as that option was removed
-CODECFORTR = UTF-8
+// over how many buckets entries with new addresses originating from a single group are spread
+#define ADDRMAN_NEW_BUCKETS_PER_SOURCE_GROUP 32
 
-# for lrelease/lupdate
-# also add new translations to src/qt/bitcoin.qrc under translations/
-TRANSLATIONS = $$files(src/qt/locale/bitcoin_*.ts)
+// in how many buckets for entries with new addresses a single address may occur
+#define ADDRMAN_NEW_BUCKETS_PER_ADDRESS 4
 
-isEmpty(QMAKE_LRELEASE) {
-    win32:QMAKE_LRELEASE = $$[QT_INSTALL_BINS]\\lrelease.exe
-    else:QMAKE_LRELEASE = $$[QT_INSTALL_BINS]/lrelease
-}
-isEmpty(QM_DIR):QM_DIR = $$PWD/src/qt/locale
-# automatically build translations, so they can be included in resource file
-TSQM.name = lrelease ${QMAKE_FILE_IN}
-TSQM.input = TRANSLATIONS
-TSQM.output = $$QM_DIR/${QMAKE_FILE_BASE}.qm
-TSQM.commands = $$QMAKE_LRELEASE ${QMAKE_FILE_IN} -qm ${QMAKE_FILE_OUT}
-TSQM.CONFIG = no_link
-QMAKE_EXTRA_COMPILERS += TSQM
+// how many entries in a bucket with tried addresses are inspected, when selecting one to replace
+#define ADDRMAN_TRIED_ENTRIES_INSPECT_ON_EVICT 4
 
-# "Other files" to show in Qt Creator
-OTHER_FILES += README.md \
-    doc/*.rst \
-    doc/*.txt \
-    doc/*.md \
-    src/qt/res/bitcoin-qt.rc \
-    src/test/*.cpp \
-    src/test/*.h \
-    src/qt/test/*.cpp \
-    src/qt/test/*.h
+// how old addresses can maximally be
+#define ADDRMAN_HORIZON_DAYS 30
 
-# platform specific defaults, if not overridden on command line
-isEmpty(BOOST_LIB_SUFFIX) {
-    macx:BOOST_LIB_SUFFIX = -mt
-    win32:BOOST_LIB_SUFFIX = -mgw44-mt-s-1_50
-}
+// after how many failed attempts we give up on a new node
+#define ADDRMAN_RETRIES 3
 
-isEmpty(BOOST_THREAD_LIB_SUFFIX) {
-    BOOST_THREAD_LIB_SUFFIX = $$BOOST_LIB_SUFFIX
-}
+// how many successive failures are allowed ...
+#define ADDRMAN_MAX_FAILURES 10
 
-isEmpty(BDB_LIB_PATH) {
-    macx:BDB_LIB_PATH = /opt/local/lib/db48
-}
+// ... in at least this many days
+#define ADDRMAN_MIN_FAIL_DAYS 7
 
-isEmpty(BDB_LIB_SUFFIX) {
-    macx:BDB_LIB_SUFFIX = -4.8
-}
+// the maximum percentage of nodes to return in a getaddr call
+#define ADDRMAN_GETADDR_MAX_PCT 23
 
-isEmpty(BDB_INCLUDE_PATH) {
-    macx:BDB_INCLUDE_PATH = /opt/local/include/db48
-}
+// the maximum number of nodes to return in a getaddr call
+#define ADDRMAN_GETADDR_MAX 2500
 
-isEmpty(BOOST_LIB_PATH) {
-    macx:BOOST_LIB_PATH = /opt/local/lib
-}
+/** Stochastical (IP) address manager */
+class CAddrMan
+{
+private:
+    // critical section to protect the inner data structures
+    mutable CCriticalSection cs;
 
-isEmpty(BOOST_INCLUDE_PATH) {
-    macx:BOOST_INCLUDE_PATH = /opt/local/include
-}
+    // secret key to randomize bucket select with
+    std::vector<unsigned char> nKey;
 
-win32:DEFINES += WIN32
-win32:RC_FILE = src/qt/res/bitcoin-qt.rc
+    // last used nId
+    int nIdCount;
 
-win32:!contains(MINGW_THREAD_BUGFIX, 0) {
-    # At least qmake's win32-g++-cross profile is missing the -lmingwthrd
-    # thread-safety flag. GCC has -mthreads to enable this, but it doesn't
-    # work with static linking. -lmingwthrd must come BEFORE -lmingw, so
-    # it is prepended to QMAKE_LIBS_QT_ENTRY.
-    # It can be turned off with MINGW_THREAD_BUGFIX=0, just in case it causes
-    # any problems on some untested qmake profile now or in the future.
-    DEFINES += _MT
-    QMAKE_LIBS_QT_ENTRY = -lmingwthrd $$QMAKE_LIBS_QT_ENTRY
-}
+    // table with information about all nIds
+    std::map<int, CAddrInfo> mapInfo;
 
-!win32:!macx {
-    DEFINES += LINUX
-    LIBS += -lrt
-    # _FILE_OFFSET_BITS=64 lets 32-bit fopen transparently support large files.
-    DEFINES += _FILE_OFFSET_BITS=64
-}
+    // find an nId based on its network address
+    std::map<CNetAddr, int> mapAddr;
 
-macx:HEADERS += src/qt/macdockiconhandler.h src/qt/macnotificationhandler.h
-macx:OBJECTIVE_SOURCES += src/qt/macdockiconhandler.mm src/qt/macnotificationhandler.mm
-macx:LIBS += -framework Foundation -framework ApplicationServices -framework AppKit -framework CoreServices
-macx:DEFINES += MAC_OSX MSG_NOSIGNAL=0
-macx:ICON = src/qt/res/icons/sportcoin.icns
-macx:QMAKE_CFLAGS_THREAD += -pthread
-macx:QMAKE_LFLAGS_THREAD += -pthread
-macx:QMAKE_CXXFLAGS_THREAD += -pthread
-macx:QMAKE_INFO_PLIST = share/qt/Info.plist
+    // randomly-ordered vector of all nIds
+    std::vector<int> vRandom;
 
-# Set libraries and includes at end, to use platform-defined defaults if not overridden
-INCLUDEPATH += $$BOOST_INCLUDE_PATH $$BDB_INCLUDE_PATH $$OPENSSL_INCLUDE_PATH $$QRENCODE_INCLUDE_PATH
-LIBS += $$join(BOOST_LIB_PATH,,-L,) $$join(BDB_LIB_PATH,,-L,) $$join(OPENSSL_LIB_PATH,,-L,) $$join(QRENCODE_LIB_PATH,,-L,)
-LIBS += -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX
-# -lgdi32 has to happen after -lcrypto (see  #681)
-win32:LIBS += -lws2_32 -lshlwapi -lmswsock -lole32 -loleaut32 -luuid -lgdi32
-LIBS += -lboost_system$$BOOST_LIB_SUFFIX -lboost_filesystem$$BOOST_LIB_SUFFIX -lboost_program_options$$BOOST_LIB_SUFFIX -lboost_thread$$BOOST_THREAD_LIB_SUFFIX
-win32:LIBS += -lboost_chrono$$BOOST_LIB_SUFFIX
-macx:LIBS += -lboost_chrono$$BOOST_LIB_SUFFIX
+    // number of "tried" entries
+    int nTried;
 
-contains(RELEASE, 1) {
-    !win32:!macx {
-        # Linux: turn dynamic linking back on for c/c++ runtime libraries
-        LIBS += -Wl,-Bdynamic
+    // list of "tried" buckets
+    std::vector<std::vector<int> > vvTried;
+
+    // number of (unique) "new" entries
+    int nNew;
+
+    // list of "new" buckets
+    std::vector<std::set<int> > vvNew;
+
+protected:
+
+    // Find an entry.
+    CAddrInfo* Find(const CNetAddr& addr, int *pnId = NULL);
+
+    // find an entry, creating it if necessary.
+    // nTime and nServices of found node is updated, if necessary.
+    CAddrInfo* Create(const CAddress &addr, const CNetAddr &addrSource, int *pnId = NULL);
+
+    // Swap two elements in vRandom.
+    void SwapRandom(unsigned int nRandomPos1, unsigned int nRandomPos2);
+
+    // Return position in given bucket to replace.
+    int SelectTried(int nKBucket);
+
+    // Remove an element from a "new" bucket.
+    // This is the only place where actual deletes occur.
+    // They are never deleted while in the "tried" table, only possibly evicted back to the "new" table.
+    int ShrinkNew(int nUBucket);
+
+    // Move an entry from the "new" table(s) to the "tried" table
+    // @pre vvUnkown[nOrigin].count(nId) != 0
+    void MakeTried(CAddrInfo& info, int nId, int nOrigin);
+
+    // Mark an entry "good", possibly moving it from "new" to "tried".
+    void Good_(const CService &addr, int64 nTime);
+
+    // Add an entry to the "new" table.
+    bool Add_(const CAddress &addr, const CNetAddr& source, int64 nTimePenalty);
+
+    // Mark an entry as attempted to connect.
+    void Attempt_(const CService &addr, int64 nTime);
+
+    // Select an address to connect to.
+    // nUnkBias determines how much to favor new addresses over tried ones (min=0, max=100)
+    CAddress Select_(int nUnkBias);
+
+#ifdef DEBUG_ADDRMAN
+    // Perform consistency check. Returns an error code or zero.
+    int Check_();
+#endif
+
+    // Select several addresses at once.
+    void GetAddr_(std::vector<CAddress> &vAddr);
+
+    // Mark an entry as currently-connected-to.
+    void Connected_(const CService &addr, int64 nTime);
+
+public:
+
+    IMPLEMENT_SERIALIZE
+    (({
+        // serialized format:
+        // * version byte (currently 0)
+        // * nKey
+        // * nNew
+        // * nTried
+        // * number of "new" buckets
+        // * all nNew addrinfos in vvNew
+        // * all nTried addrinfos in vvTried
+        // * for each bucket:
+        //   * number of elements
+        //   * for each element: index
+        //
+        // Notice that vvTried, mapAddr and vVector are never encoded explicitly;
+        // they are instead reconstructed from the other information.
+        //
+        // vvNew is serialized, but only used if ADDRMAN_UNKOWN_BUCKET_COUNT didn't change,
+        // otherwise it is reconstructed as well.
+        //
+        // This format is more complex, but significantly smaller (at most 1.5 MiB), and supports
+        // changes to the ADDRMAN_ parameters without breaking the on-disk structure.
+        {
+            LOCK(cs);
+            unsigned char nVersion = 0;
+            READWRITE(nVersion);
+            READWRITE(nKey);
+            READWRITE(nNew);
+            READWRITE(nTried);
+
+            CAddrMan *am = const_cast<CAddrMan*>(this);
+            if (fWrite)
+            {
+                int nUBuckets = ADDRMAN_NEW_BUCKET_COUNT;
+                READWRITE(nUBuckets);
+                std::map<int, int> mapUnkIds;
+                int nIds = 0;
+                for (std::map<int, CAddrInfo>::iterator it = am->mapInfo.begin(); it != am->mapInfo.end(); it++)
+                {
+                    if (nIds == nNew) break; // this means nNew was wrong, oh ow
+                    mapUnkIds[(*it).first] = nIds;
+                    CAddrInfo &info = (*it).second;
+                    if (info.nRefCount)
+                    {
+                        READWRITE(info);
+                        nIds++;
+                    }
+                }
+                nIds = 0;
+                for (std::map<int, CAddrInfo>::iterator it = am->mapInfo.begin(); it != am->mapInfo.end(); it++)
+                {
+                    if (nIds == nTried) break; // this means nTried was wrong, oh ow
+                    CAddrInfo &info = (*it).second;
+                    if (info.fInTried)
+                    {
+                        READWRITE(info);
+                        nIds++;
+                    }
+                }
+                for (std::vector<std::set<int> >::iterator it = am->vvNew.begin(); it != am->vvNew.end(); it++)
+                {
+                    const std::set<int> &vNew = (*it);
+                    int nSize = vNew.size();
+                    READWRITE(nSize);
+                    for (std::set<int>::iterator it2 = vNew.begin(); it2 != vNew.end(); it2++)
+                    {
+                        int nIndex = mapUnkIds[*it2];
+                        READWRITE(nIndex);
+                    }
+                }
+            } else {
+                int nUBuckets = 0;
+                READWRITE(nUBuckets);
+                am->nIdCount = 0;
+                am->mapInfo.clear();
+                am->mapAddr.clear();
+                am->vRandom.clear();
+                am->vvTried = std::vector<std::vector<int> >(ADDRMAN_TRIED_BUCKET_COUNT, std::vector<int>(0));
+                am->vvNew = std::vector<std::set<int> >(ADDRMAN_NEW_BUCKET_COUNT, std::set<int>());
+                for (int n = 0; n < am->nNew; n++)
+                {
+                    CAddrInfo &info = am->mapInfo[n];
+                    READWRITE(info);
+                    am->mapAddr[info] = n;
+                    info.nRandomPos = vRandom.size();
+                    am->vRandom.push_back(n);
+                    if (nUBuckets != ADDRMAN_NEW_BUCKET_COUNT)
+                    {
+                        am->vvNew[info.GetNewBucket(am->nKey)].insert(n);
+                        info.nRefCount++;
+                    }
+                }
+                am->nIdCount = am->nNew;
+                int nLost = 0;
+                for (int n = 0; n < am->nTried; n++)
+                {
+                    CAddrInfo info;
+                    READWRITE(info);
+                    std::vector<int> &vTried = am->vvTried[info.GetTriedBucket(am->nKey)];
+                    if (vTried.size() < ADDRMAN_TRIED_BUCKET_SIZE)
+                    {
+                        info.nRandomPos = vRandom.size();
+                        info.fInTried = true;
+                        am->vRandom.push_back(am->nIdCount);
+                        am->mapInfo[am->nIdCount] = info;
+                        am->mapAddr[info] = am->nIdCount;
+                        vTried.push_back(am->nIdCount);
+                        am->nIdCount++;
+                    } else {
+                        nLost++;
+                    }
+                }
+                am->nTried -= nLost;
+                for (int b = 0; b < nUBuckets; b++)
+                {
+                    std::set<int> &vNew = am->vvNew[b];
+                    int nSize = 0;
+                    READWRITE(nSize);
+                    for (int n = 0; n < nSize; n++)
+                    {
+                        int nIndex = 0;
+                        READWRITE(nIndex);
+                        CAddrInfo &info = am->mapInfo[nIndex];
+                        if (nUBuckets == ADDRMAN_NEW_BUCKET_COUNT && info.nRefCount < ADDRMAN_NEW_BUCKETS_PER_ADDRESS)
+                        {
+                            info.nRefCount++;
+                            vNew.insert(nIndex);
+                        }
+                    }
+                }
+            }
+        }
+    });)
+
+    CAddrMan() : vRandom(0), vvTried(ADDRMAN_TRIED_BUCKET_COUNT, std::vector<int>(0)), vvNew(ADDRMAN_NEW_BUCKET_COUNT, std::set<int>())
+    {
+         nKey.resize(32);
+         RAND_bytes(&nKey[0], 32);
+
+         nIdCount = 0;
+         nTried = 0;
+         nNew = 0;
     }
-}
 
-system($$QMAKE_LRELEASE -silent $$TRANSLATIONS)
+    // Return the number of (unique) addresses in all tables.
+    int size()
+    {
+        return vRandom.size();
+    }
+
+    // Consistency check
+    void Check()
+    {
+#ifdef DEBUG_ADDRMAN
+        {
+            LOCK(cs);
+            int err;
+            if ((err=Check_()))
+                printf("ADDRMAN CONSISTENCY CHECK FAILED!!! err=%i\n", err);
+        }
+#endif
+    }
+
+    // Add a single address.
+    bool Add(const CAddress &addr, const CNetAddr& source, int64 nTimePenalty = 0)
+    {
+        bool fRet = false;
+        {
+            LOCK(cs);
+            Check();
+            fRet |= Add_(addr, source, nTimePenalty);
+            Check();
+        }
+        if (fRet)
+            printf("Added %s from %s: %i tried, %i new\n", addr.ToStringIPPort().c_str(), source.ToString().c_str(), nTried, nNew);
+        return fRet;
+    }
+
+    // Add multiple addresses.
+    bool Add(const std::vector<CAddress> &vAddr, const CNetAddr& source, int64 nTimePenalty = 0)
+    {
+        int nAdd = 0;
+        {
+            LOCK(cs);
+            Check();
+            for (std::vector<CAddress>::const_iterator it = vAddr.begin(); it != vAddr.end(); it++)
+                nAdd += Add_(*it, source, nTimePenalty) ? 1 : 0;
+            Check();
+        }
+        if (nAdd)
+            printf("Added %i addresses from %s: %i tried, %i new\n", nAdd, source.ToString().c_str(), nTried, nNew);
+        return nAdd > 0;
+    }
+
+    // Mark an entry as accessible.
+    void Good(const CService &addr, int64 nTime = GetAdjustedTime())
+    {
+        {
+            LOCK(cs);
+            Check();
+            Good_(addr, nTime);
+            Check();
+        }
+    }
+
+    // Mark an entry as connection attempted to.
+    void Attempt(const CService &addr, int64 nTime = GetAdjustedTime())
+    {
+        {
+            LOCK(cs);
+            Check();
+            Attempt_(addr, nTime);
+            Check();
+        }
+    }
+
+    // Choose an address to connect to.
+    // nUnkBias determines how much "new" entries are favored over "tried" ones (0-100).
+    CAddress Select(int nUnkBias = 50)
+    {
+        CAddress addrRet;
+        {
+            LOCK(cs);
+            Check();
+            addrRet = Select_(nUnkBias);
+            Check();
+        }
+        return addrRet;
+    }
+
+    // Return a bunch of addresses, selected at random.
+    std::vector<CAddress> GetAddr()
+    {
+        Check();
+        std::vector<CAddress> vAddr;
+        {
+            LOCK(cs);
+            GetAddr_(vAddr);
+        }
+        Check();
+        return vAddr;
+    }
+
+    // Mark an entry as currently-connected-to.
+    void Connected(const CService &addr, int64 nTime = GetAdjustedTime())
+    {
+        {
+            LOCK(cs);
+            Check();
+            Connected_(addr, nTime);
+            Check();
+        }
+    }
+};
+
+#endif
