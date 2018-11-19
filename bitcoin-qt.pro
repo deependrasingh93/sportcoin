@@ -1,7 +1,7 @@
 TEMPLATE = app
 TARGET = sportcoin-qt
-macx:TARGET = "sportcoin-Qt"
-VERSION = 0.8.7.4
+macx:TARGET = "Sportcoin-Qt"
+VERSION = 0.8.7.5
 INCLUDEPATH += src src/json src/qt
 QT += core gui network
 greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
@@ -18,17 +18,7 @@ CONFIG += thread
 # Dependency library locations can be customized with:
 #    BOOST_INCLUDE_PATH, BOOST_LIB_PATH, BDB_INCLUDE_PATH,
 #    BDB_LIB_PATH, OPENSSL_INCLUDE_PATH and OPENSSL_LIB_PATH respectively
-#BOOST_LIB_SUFFIX=-mgw49-mt-s-1_55
-#BOOST_INCLUDE_PATH=C:/deps/boost_1_55_0
-#BOOST_LIB_PATH=C:/deps/boost_1_55_0/stage/lib
-#BDB_INCLUDE_PATH=C:/deps/db-4.8.30.NC/build_unix
-#BDB_LIB_PATH=C:/deps/db-4.8.30.NC/build_unix
-#OPENSSL_INCLUDE_PATH=C:/deps/openssl-1.0.1j/include
-#OPENSSL_LIB_PATH=C:/deps/openssl-1.0.1j
-#MINIUPNPC_INCLUDE_PATH=C:/deps/
-#MINIUPNPC_LIB_PATH=C:/deps/miniupnpc
-#QRENCODE_INCLUDE_PATH=C:/deps/qrencode-3.4.4
-#QRENCODE_LIB_PATH=C:/deps/qrencode-3.4.4/.libs
+
 OBJECTS_DIR = build
 MOC_DIR = build
 UI_DIR = build
@@ -58,7 +48,7 @@ QMAKE_CXXFLAGS += -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2
 # for extra security on Windows: enable ASLR and DEP via GCC linker flags
 win32:QMAKE_LFLAGS *= -Wl,--dynamicbase -Wl,--nxcompat
 # on Windows: enable GCC large address aware linker flag
-win32:QMAKE_LFLAGS *= -Wl,--large-address-aware 
+win32:QMAKE_LFLAGS *= -Wl,--large-address-aware
 # i686-w64-mingw32
 win32:QMAKE_LFLAGS *= -static-libgcc -static-libstdc++
 
